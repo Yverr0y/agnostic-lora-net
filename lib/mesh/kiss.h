@@ -26,16 +26,19 @@ constexpr uint8_t  KISS_CMD_DATA   = 0x00;
 constexpr uint8_t  KISS_CMD_RETURN = 0xFF;
 constexpr uint16_t KISS_MAX_FRAME  = 1 + 800;   // cmd + payload (≥ TUN_HOST_MAX)
 
-// Encode one frame (FEND + cmd + escaped payload + FEND) into `out`.
-// Returns bytes written, or 0 if `cap` can't hold the worst case.
+// Encode one frame (FEND + escaped cmd + escaped payload + FEND) into `out`.
+// Returns bytes written, or 0 if `cap` can't hold the worst case. Everything
+// between the FENDs is escaped, cmd included — the cmds this firmware sends
+// (0x00/0xFF) never need it, but encode/decode must stay true inverses for
+// ANY byte or a cmd of 0xC0/0xDB would emit a corrupt frame (found by
+// fuzz_kiss round-trip checking).
 inline uint16_t kiss_encode(uint8_t cmd, const uint8_t* in, uint16_t len,
                             uint8_t* out, uint16_t cap) {
     uint16_t n = 0;
     if (cap < 4) return 0;
     out[n++] = KISS_FEND;
-    out[n++] = cmd;                      // cmd 0x00/0xFF never needs escaping
-    for (uint16_t i = 0; i < len; i++) {
-        uint8_t b = in[i];
+    for (uint16_t i = 0; i <= len; i++) {
+        uint8_t b = (i == 0) ? cmd : in[i - 1];
         if (b == KISS_FEND)      { if (n + 3 > cap) return 0; out[n++] = KISS_FESC; out[n++] = KISS_TFEND; }
         else if (b == KISS_FESC) { if (n + 3 > cap) return 0; out[n++] = KISS_FESC; out[n++] = KISS_TFESC; }
         else                     { if (n + 2 > cap) return 0; out[n++] = b; }

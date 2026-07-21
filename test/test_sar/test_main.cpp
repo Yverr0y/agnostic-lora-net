@@ -151,6 +151,57 @@ static void test_done_roundtrip() {
     TEST_ASSERT_FALSE(sar_is_done(done, 3));   // truncated
 }
 
+// Regression (fuzz_sar): a fragment whose declared frag_count / total_len /
+// chunk length are mutually inconsistent must be rejected, not folded into the
+// transfer. The original bug let got_count_ reach frag_count_ ("complete")
+// while got_[] still had holes, so missing() returned indices for a transfer
+// that reported itself done. Feed one valid fragment of a 2-fragment transfer,
+// then an injected fragment claiming frag_count=1 for the same xfer id.
+static void test_reject_inconsistent_header() {
+    uint8_t blob[200];
+    make_blob(blob, sizeof(blob));
+    uint32_t crc = sar_crc32(blob, sizeof(blob));
+    TEST_ASSERT_EQUAL_UINT16(2, sar_frag_count(sizeof(blob)));
+
+    SarReassembler r;
+    uint8_t frag[200];
+    uint16_t f0 = sar_build_fragment(blob, sizeof(blob), 0x0101, crc, 0, frag, sizeof(frag));
+    TEST_ASSERT_TRUE(r.add(frag, f0));
+
+    // Forge a fragment for the SAME xfer id but claiming the transfer is a
+    // single fragment (count=1, total_len small) — a full SAR_CHUNK payload
+    // that would then be "the whole file".
+    uint8_t forged[SAR_HDR_BYTES + SAR_CHUNK];
+    memcpy(forged, frag, SAR_HDR_BYTES);            // reuse magic + xfer id
+    forged[6] = 0; forged[7] = 0;                   // frag_idx = 0
+    forged[8] = 1; forged[9] = 0;                   // frag_count = 1  (contradicts)
+    TEST_ASSERT_FALSE(r.add(forged, SAR_HDR_BYTES + SAR_CHUNK));
+
+    // The genuine transfer is untouched: still active, one of two fragments.
+    uint16_t miss[SAR_MAX_FRAGS];
+    uint16_t nmiss = r.missing(miss, SAR_MAX_FRAGS);
+    TEST_ASSERT_FALSE(r.complete());
+    TEST_ASSERT_EQUAL_UINT16(1, nmiss);             // fragment 1 still missing
+    TEST_ASSERT_EQUAL_UINT16(1, miss[0]);
+}
+
+// Regression (fuzz_sar): a last fragment padded past its true remainder length,
+// or a middle fragment shorter than SAR_CHUNK, must be rejected — the chunk
+// size is fully determined by (idx, total_len).
+static void test_reject_wrong_chunk_len() {
+    uint8_t blob[200];
+    make_blob(blob, sizeof(blob));
+    uint32_t crc = sar_crc32(blob, sizeof(blob));
+
+    SarReassembler r;
+    uint8_t frag[SAR_HDR_BYTES + SAR_CHUNK];
+    uint16_t f0 = sar_build_fragment(blob, sizeof(blob), 7, crc, 0, frag, sizeof(frag));
+    // Fragment 0 is a full-chunk fragment; truncate it by one byte.
+    TEST_ASSERT_FALSE(r.add(frag, f0 - 1));
+    // The correct length is accepted.
+    TEST_ASSERT_TRUE(r.add(frag, f0));
+}
+
 void setUp() {}
 void tearDown() {}
 
@@ -163,5 +214,7 @@ int main(int, char**) {
     RUN_TEST(test_corruption_caught);
     RUN_TEST(test_nack_recovery);
     RUN_TEST(test_done_roundtrip);
+    RUN_TEST(test_reject_inconsistent_header);
+    RUN_TEST(test_reject_wrong_chunk_len);
     return UNITY_END();
 }

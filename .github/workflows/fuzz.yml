@@ -1,0 +1,72 @@
+# Fuzz the RX parsers (handoff plan Task 1). Every decode path in lib/mesh has a
+# libFuzzer harness built with clang + ASan/UBSan (fuzz/), plus Go native fuzzing
+# for the controller's verify + console-ingest paths. Zero firmware flash cost.
+#
+#   * On PRs / pushes: a short bounded smoke run of every target (catches
+#     regressions fast; seeds come from the checked-in corpus).
+#   * Nightly: a longer run to keep finding new inputs.
+name: fuzz
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '27 4 * * *'   # nightly, off-peak
+  workflow_dispatch:
+
+jobs:
+  libfuzzer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang + libFuzzer runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libclang-rt-dev || sudo apt-get install -y clang
+
+      - name: Build harnesses
+        working-directory: fuzz
+        run: make -j"$(nproc)"
+
+      # Regenerate seeds (proves the generator still matches the builders) then
+      # run each target. SECS is short on PRs, long on the nightly schedule.
+      - name: Set fuzz duration
+        run: echo "SECS=${{ github.event_name == 'schedule' && 300 || 45 }}" >> "$GITHUB_ENV"
+
+      - name: Seed corpus
+        working-directory: fuzz
+        run: make seeds
+
+      - name: Run all harnesses
+        working-directory: fuzz
+        run: make run-all SECS=${{ env.SECS }}
+
+      - name: Upload crashers if any
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashers
+          path: |
+            fuzz/crash-*
+            fuzz/timeout-*
+            fuzz/oom-*
+          if-no-files-found: ignore
+
+  go-fuzz:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: controller
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+      - name: Set fuzz duration
+        run: echo "FT=${{ github.event_name == 'schedule' && '300s' || '30s' }}" >> "$GITHUB_ENV"
+      - name: Fuzz control verify
+        run: go test ./internal/sign -run x -fuzz FuzzVerifyControl -fuzztime ${{ env.FT }}
+      - name: Fuzz console ingest
+        run: go test ./internal/ingest -run x -fuzz FuzzParseLine -fuzztime ${{ env.FT }}
