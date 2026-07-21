@@ -3033,8 +3033,38 @@ void loop() { agn_loop_once(); }
 // faulting the node ~20s after it first heard a peer. Bumped to 4096 words (16 KB) — RAM is
 // ~26% used, so this is free — and the crypto view[] buffers are now static (off-stack).
 // The heartbeat's stk= field reports this task's remaining headroom — watch it in the field.
+// Idle power management (handoff plan Task 4).
+//
+// The main task never blocks, so it busy-spins the MCU through the scheduler at
+// TASK_PRIO_LOW and the FreeRTOS idle task (where the Adafruit core parks the
+// core in sd_app_evt_wait) almost never runs — the CPU burns several mA doing
+// nothing between radio events. `agn_idle_wait()` lets the idle task run so the
+// SoftDevice sleeps the MCU (never a raw __WFE/__WFI alongside s140).
+//
+// DEFAULT OFF: without -DAGN_IDLE_SLEEP the task yield()s exactly as before, so
+// the shipped firmware's timing and on-air behaviour are UNCHANGED (ground rule:
+// this task must not change on-air behaviour). Enable with -DAGN_IDLE_SLEEP=1
+// and run the hardware soak in docs/idle-power.md (24 h multi-hop, zero
+// reliability regression vs a non-sleeping control) BEFORE relying on it — that
+// verification, not this glue, is the substance of the task.
+//
+// When enabled: an unattended node briefly blocks (one RTOS tick) instead of
+// spinning, so the idle task sleeps the MCU; the radio's DIO1 IRQ and the tick
+// both wake it, and polled work sees at most ~1 tick (~1 ms) of added latency —
+// far inside the ARQ (5 s) and beacon (10 s) windows. A USB-attached (powered)
+// node stays fully responsive and does not sleep (plan item 3). Sleep logic is
+// firmware glue only; lib/mesh and `pio test -e native` are untouched.
+static inline void agn_idle_wait() {
+#if defined(AGN_IDLE_SLEEP) && AGN_IDLE_SLEEP
+    if ((bool)Serial) { yield(); return; }   // USB attached -> stay hot, don't sleep
+    vTaskDelay(1);                            // ~1 tick: idle task runs -> MCU sleeps
+#else
+    yield();
+#endif
+}
+
 static void agn_main_task(void*) {
-    for (;;) { agn_loop_once(); yield(); }
+    for (;;) { agn_loop_once(); agn_idle_wait(); }
 }
 
 void loop() {

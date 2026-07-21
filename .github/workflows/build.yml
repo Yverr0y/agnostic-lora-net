@@ -145,6 +145,9 @@ jobs:
       - name: Tunnel-wire demo
         working-directory: hostlib
         run: python examples/session_over_tunnel.py
+      - name: Soak analyzer tests (idle-power verifier)
+        working-directory: scripts
+        run: python -m unittest test_soak_analyze -v
 
   # Publish the web commissioning hub (web/) to GitHub Pages, with the freshly built
   # firmware staged into web/fw/ so the in-browser flasher fetches it SAME-ORIGIN (no
