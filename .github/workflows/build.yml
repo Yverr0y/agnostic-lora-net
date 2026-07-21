@@ -128,6 +128,24 @@ jobs:
             agn-heltec-v4.bin
           generate_release_notes: true
 
+  # Host-side session library for custom (Path B) apps — pure Python, no
+  # firmware. Runs its own unit suite + the tunnel-wire demo.
+  hostlib:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install deps
+        run: pip install -r hostlib/requirements.txt
+      - name: Unit tests (aln_session)
+        working-directory: hostlib
+        run: python -m unittest discover -s tests -v
+      - name: Tunnel-wire demo
+        working-directory: hostlib
+        run: python examples/session_over_tunnel.py
+
   # Publish the web commissioning hub (web/) to GitHub Pages, with the freshly built
   # firmware staged into web/fw/ so the in-browser flasher fetches it SAME-ORIGIN (no
   # cross-origin/CORS dependency on release downloads). Reuses the firmware-uf2 artifact
