@@ -27,6 +27,7 @@
 #include "control.h"
 #include "sar.h"
 #include "locator_dir.h"
+#include "version_stats.h"
 #include "node_table.h"            // nid_from_pubkey for the self-certifying node id
 #include "monocypher.h"            // node keypair: keygen + (later) announce signing
 #include "monocypher-ed25519.h"
@@ -101,6 +102,7 @@ static node_id_t       my_id;
 static mesh::Router*   router    = nullptr;  // constructed in setup() once my_id is known
 static mesh::Forwarder* forwarder = nullptr;
 static mesh::LinkArq   arq;                  // hop-by-hop ACK + retry
+static mesh::VersionStats ver_stats;         // frames dropped for wrong proto major (Task 2)
 static uint32_t        next_arq_ms = 0;
 static const uint32_t  ARQ_TICK_MS = 250;    // how often to check for retransmits
 static uint16_t        beacon_seq     = 0;
@@ -1684,7 +1686,11 @@ static void on_rx(const uint8_t* buf, uint16_t len, float rssi, float snr) {
     NetHeader net;
     memcpy(&net, buf + sizeof(LinkHeader), sizeof(net));
 
-    if (net_ver_of(net.ver_type) != PROTO_VERSION) return;  // not ours
+    uint8_t rx_ver = net_ver_of(net.ver_type);
+    if (rx_ver != PROTO_VERSION) {              // wrong protocol major — drop, but count it
+        ver_stats.on_foreign(rx_ver);           // so a mixed-version mesh is visible (Task 2)
+        return;
+    }
     if (net.src == my_id) return;                            // ignore our own echo
 
     PacketType type = net_type_of(net.ver_type);
@@ -2199,6 +2205,16 @@ static void print_info() {
              (unsigned)router->routes().count(), (unsigned)router->blocked_count(),
              node_mobile ? "on" : "off", node_name);
     Serial.println(l);
+    // Protocol-version drops: only printed once a foreign-version frame has been
+    // heard, so a healthy same-version mesh keeps the line clean. The controller
+    // map ingests this to flag an incompatible neighbour (Task 2).
+    if (ver_stats.any()) {
+        char v[64];
+        snprintf(v, sizeof(v), "[ver] drops=%lu last=%u supported=%u",
+                 (unsigned long)ver_stats.drops(), (unsigned)ver_stats.last_ver(),
+                 (unsigned)PROTO_VERSION);
+        Serial.println(v);
+    }
     // Authoritative block list (always printed, even when empty) so the map can sync
     // exactly which links this node is blocking. MAX_BLOCKED (8) ids fit one line.
     {
@@ -3017,8 +3033,38 @@ void loop() { agn_loop_once(); }
 // faulting the node ~20s after it first heard a peer. Bumped to 4096 words (16 KB) — RAM is
 // ~26% used, so this is free — and the crypto view[] buffers are now static (off-stack).
 // The heartbeat's stk= field reports this task's remaining headroom — watch it in the field.
+// Idle power management (handoff plan Task 4).
+//
+// The main task never blocks, so it busy-spins the MCU through the scheduler at
+// TASK_PRIO_LOW and the FreeRTOS idle task (where the Adafruit core parks the
+// core in sd_app_evt_wait) almost never runs — the CPU burns several mA doing
+// nothing between radio events. `agn_idle_wait()` lets the idle task run so the
+// SoftDevice sleeps the MCU (never a raw __WFE/__WFI alongside s140).
+//
+// DEFAULT OFF: without -DAGN_IDLE_SLEEP the task yield()s exactly as before, so
+// the shipped firmware's timing and on-air behaviour are UNCHANGED (ground rule:
+// this task must not change on-air behaviour). Enable with -DAGN_IDLE_SLEEP=1
+// and run the hardware soak in docs/idle-power.md (24 h multi-hop, zero
+// reliability regression vs a non-sleeping control) BEFORE relying on it — that
+// verification, not this glue, is the substance of the task.
+//
+// When enabled: an unattended node briefly blocks (one RTOS tick) instead of
+// spinning, so the idle task sleeps the MCU; the radio's DIO1 IRQ and the tick
+// both wake it, and polled work sees at most ~1 tick (~1 ms) of added latency —
+// far inside the ARQ (5 s) and beacon (10 s) windows. A USB-attached (powered)
+// node stays fully responsive and does not sleep (plan item 3). Sleep logic is
+// firmware glue only; lib/mesh and `pio test -e native` are untouched.
+static inline void agn_idle_wait() {
+#if defined(AGN_IDLE_SLEEP) && AGN_IDLE_SLEEP
+    if ((bool)Serial) { yield(); return; }   // USB attached -> stay hot, don't sleep
+    vTaskDelay(1);                            // ~1 tick: idle task runs -> MCU sleeps
+#else
+    yield();
+#endif
+}
+
 static void agn_main_task(void*) {
-    for (;;) { agn_loop_once(); yield(); }
+    for (;;) { agn_loop_once(); agn_idle_wait(); }
 }
 
 void loop() {

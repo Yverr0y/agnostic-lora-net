@@ -1,0 +1,3 @@
+# aln_session's only dependency: the vetted `cryptography` library
+# (X25519, ChaCha20-Poly1305, HKDF-SHA256, Ed25519). No hand-rolled crypto.
+cryptography>=41.0

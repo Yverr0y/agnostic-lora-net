@@ -37,6 +37,13 @@ struct Announce {
     uint8_t   n_reports = 0;
     RouteAdv  routes[MAX_ROUTES];
     uint8_t   n_routes = 0;
+    // Capability bits the origin advertises (mesh::Capability). 0 for a legacy
+    // announce that carried no capability field; the codec fills this in.
+    uint16_t  caps = 0;
+    // Whether the capability field is present on the wire. Defaults true (every
+    // announce this firmware builds carries it); the decoder clears it for a
+    // legacy announce so announce_body_len() locates the signature tail exactly.
+    bool      has_caps = true;
 };
 
 class Router {
@@ -86,6 +93,13 @@ public:
     }
 
     const NeighborTable& neighbors() const { return neighbors_; }
+
+    // Capability negotiation (Task 2): does neighbour `dst` advertise `cap`
+    // (a mesh::Capability bit)? A feature can gate on this so it only engages
+    // with peers that understand it, keeping a mixed-version mesh working.
+    bool neighbor_supports(node_id_t dst, uint16_t cap) const {
+        return neighbors_.supports(dst, cap);
+    }
     const RoutingTable&  routes()    const { return routes_; }
 
 private:

@@ -80,6 +80,28 @@ static void test_encode_cap_too_small() {
     TEST_ASSERT_EQUAL_UINT16(0, kiss_encode(0x00, pay, sizeof(pay), enc, sizeof(enc)));
 }
 
+// Regression (fuzz_kiss): a cmd byte equal to FEND or FESC must be escaped like
+// any other byte, or encode/decode stop being inverses. The firmware only ever
+// sends cmd 0x00/0xFF, but the codec must be total: previously encoding cmd
+// 0xC0 emitted a bare FEND, so the decoder saw two frames (or a corrupt one).
+static void test_encode_escapes_special_cmd() {
+    const uint8_t special[2] = { KISS_FEND, KISS_FESC };
+    for (int i = 0; i < 2; i++) {
+        uint8_t pay[3] = { 1, 2, 3 };
+        uint8_t enc[32];
+        uint16_t n = kiss_encode(special[i], pay, sizeof(pay), enc, sizeof(enc));
+        TEST_ASSERT_TRUE(n > 0);
+
+        KissDecoder d;
+        uint8_t frames[2][KISS_MAX_FRAME]; uint16_t lens[2];
+        // Exactly one frame comes back, cmd intact, payload intact.
+        TEST_ASSERT_EQUAL_INT(1, pump(d, enc, n, frames, lens, 2));
+        TEST_ASSERT_EQUAL_UINT16(1 + sizeof(pay), lens[0]);
+        TEST_ASSERT_EQUAL_UINT8(special[i], frames[0][0]);
+        TEST_ASSERT_EQUAL_MEMORY(pay, frames[0] + 1, sizeof(pay));
+    }
+}
+
 void setUp() {}
 void tearDown() {}
 
@@ -90,5 +112,6 @@ int main(int, char**) {
     RUN_TEST(test_garbage_between_frames_ignored);
     RUN_TEST(test_exit_command);
     RUN_TEST(test_encode_cap_too_small);
+    RUN_TEST(test_encode_escapes_special_cmd);
     return UNITY_END();
 }

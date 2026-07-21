@@ -1,0 +1,13 @@
+# Build artifacts and fuzzer-written outputs — never checked in.
+build/
+crash-*
+timeout-*
+oom-*
+leak-*
+# Corpus: check in ONLY the human-named seed .bin files (from `make seeds`,
+# which double as golden wire vectors). libFuzzer's hash-named coverage
+# entries are transient working state and stay local.
+corpus/**
+!corpus/
+!corpus/*/
+!corpus/**/*.bin

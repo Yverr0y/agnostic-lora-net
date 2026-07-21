@@ -38,14 +38,26 @@ jobs:
       - name: Install PlatformIO
         run: pip install platformio
 
-      - name: Host tests (portable routing core, 44 tests)
+      - name: Host tests (portable routing core)
         run: pio test -e native
 
-      - name: Build firmware (RAK4631 + XIAO nRF52840)
-        run: pio run -e wiscore_rak4631 -e xiao_nrf52 -e promicro
+      # Build output is tee'd so the size-report step below can parse pio's
+      # RAM:/Flash: lines (the same numbers a local `pio run` prints).
+      - name: Build firmware (RAK4631 + XIAO nRF52840 + Pro Micro + T1000-E)
+        run: |
+          set -o pipefail
+          pio run -e wiscore_rak4631 -e xiao_nrf52 -e promicro -e tracker_t1000_e 2>&1 | tee build_nrf52.log
 
       - name: Build ESP32 firmware (XIAO ESP32-S3 + Heltec V4)
-        run: pio run -e xiao_esp32s3 -e heltec_v4
+        run: |
+          set -o pipefail
+          pio run -e xiao_esp32s3 -e heltec_v4 2>&1 | tee build_esp32.log
+
+      # Size budget gate (docs/size-budget.md): emits a per-board flash/RAM
+      # table into the job summary and fails the build if any board exceeds
+      # its recorded budget. Raise budgets consciously, in the same commit.
+      - name: Firmware size report + budget check
+        run: python scripts/size_report.py build_nrf52.log build_esp32.log
 
       - name: Package UF2s
         run: |
@@ -115,6 +127,27 @@ jobs:
             agn-heltec-v4-bootapp0.bin
             agn-heltec-v4.bin
           generate_release_notes: true
+
+  # Host-side session library for custom (Path B) apps — pure Python, no
+  # firmware. Runs its own unit suite + the tunnel-wire demo.
+  hostlib:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install deps
+        run: pip install -r hostlib/requirements.txt
+      - name: Unit tests (aln_session)
+        working-directory: hostlib
+        run: python -m unittest discover -s tests -v
+      - name: Tunnel-wire demo
+        working-directory: hostlib
+        run: python examples/session_over_tunnel.py
+      - name: Soak analyzer tests (idle-power verifier)
+        working-directory: scripts
+        run: python -m unittest test_soak_analyze -v
 
   # Publish the web commissioning hub (web/) to GitHub Pages, with the freshly built
   # firmware staged into web/fw/ so the in-browser flasher fetches it SAME-ORIGIN (no

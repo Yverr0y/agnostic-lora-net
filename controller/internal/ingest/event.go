@@ -29,6 +29,7 @@ const (
 	KindBeaconRX        // "[RX] beacon src=X seq=N up=Ns ..."        (trace on)
 	KindFrameRX         // "[RX] type=N src=X seq=N len=N ..."        (trace on)
 	KindIdentity        // "[ann] <id> pub=<64hex> sig=ok|bad" — gateway-verified id↔pubkey binding
+	KindVersionDrop     // "[ver] drops=N last=V supported=S" — frames dropped for wrong proto major
 )
 
 var kindNames = map[Kind]string{
@@ -37,6 +38,7 @@ var kindNames = map[Kind]string{
 	KindNbr: "nbr", KindRoute: "route", KindCtrlAck: "ctrlack", KindNodeBatt: "nodebatt",
 	KindStatus: "status", KindAnnNbr: "annnbr", KindBeaconTX: "beacon_tx",
 	KindBeaconRX: "beacon_rx", KindFrameRX: "frame_rx", KindIdentity: "identity",
+	KindVersionDrop: "verdrop",
 }
 
 func (k Kind) String() string {

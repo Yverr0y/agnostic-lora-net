@@ -1,4 +1,5 @@
 #include "router.h"
+#include "capabilities.h"   // NODE_CAPS
 
 namespace mesh {
 
@@ -40,6 +41,7 @@ void Router::on_beacon(node_id_t from, float instant_q_rx, const Announce& a, ui
     // 1) Learn the link. q_rx from the frame we just received; q_tx from the
     //    sender's report of how well it hears us.
     neighbors_.heard(from, instant_q_rx, now_ms);
+    neighbors_.set_caps(from, a.caps);   // learn the sender's advertised capabilities (Task 2)
     for (uint8_t i = 0; i < a.n_reports; i++) {
         if (a.reports[i].id == my_id_) {
             neighbors_.set_tx_report(from, a.reports[i].q);
@@ -69,6 +71,7 @@ void Router::build_announce(Announce& out) const {
     out.origin    = my_id_;
     out.n_reports = 0;
     out.n_routes  = 0;
+    out.caps      = NODE_CAPS;   // advertise what this firmware supports (Task 2)
 
     // Report how well we hear each neighbour, so they learn their TX quality.
     for (uint8_t i = 0; i < MAX_NEIGHBORS && out.n_reports < MAX_NEIGHBORS; i++) {

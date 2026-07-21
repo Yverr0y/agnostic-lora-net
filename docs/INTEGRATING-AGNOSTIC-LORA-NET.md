@@ -34,7 +34,12 @@ Two integration paths:
   this repo does. Extra RNS-specific routing rules apply (§8.2).
 - **Path B — custom datagrams.** The payload is opaque to the node (≤768 B per frame,
   auto-fragmented over RF). The mesh gives you per-hop ARQ only — **no end-to-end
-  delivery guarantee** — so you must build your own ack/retry.
+  delivery guarantee** — so you must build your own ack/retry. For end-to-end
+  **crypto**, don't hand-roll it: drop in [`hostlib/aln_session`](../hostlib/README.md)
+  as your payload (Noise handshake, ~21 B/message overhead, replay protection,
+  Ed25519 delivery proofs — all host-side, zero firmware change). See
+  docs/tcp-bridge.md §4.3. **Path A apps skip this** — Reticulum already gives you
+  end-to-end crypto; adding a second stack breaks LXMF interop.
 
 The node is payload-agnostic either way. Everything below is Path-common except §8.2.
 

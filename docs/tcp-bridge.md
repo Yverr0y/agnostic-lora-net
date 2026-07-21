@@ -281,6 +281,36 @@ hdlc_decode:        sync on FLAG; collect to next FLAG; un-escape; discard out-o
 That's the whole contract. Anything you put in `payload` is delivered verbatim to the
 app on the destination node — bring your own encryption.
 
+### 4.3 Recommended secure layer — `aln_session` (custom apps only)
+
+A Path-B app has **no end-to-end crypto unless it brings its own**. Rather than
+have every integrator hand-roll one, this repo ships a small, vetted session
+library — [`hostlib/aln_session`](../hostlib/README.md) — that you drop in as the
+`payload` of the frame above. It gives you, by default:
+
+- a Noise handshake (X25519 + ChaCha20-Poly1305 + HKDF, `IK`/`XX`) with mutual
+  authentication and forward secrecy,
+- **~21 B overhead** per message after the one-time handshake (a 2-byte flow id
+  replaces a 16-byte app-level id in the steady state),
+- replay rejection, counter resync after loss, HKDF rekey, and
+- Ed25519 **delivery proofs** equivalent to the mesh's cryptographic receipt.
+
+It runs entirely on the bridge host: **zero node firmware change, zero
+mobile-app change**. The node still routes by the 16-byte node id in the tunnel
+envelope; the flow id and all crypto live inside the opaque `payload`. See
+[`hostlib/examples/session_over_tunnel.py`](../hostlib/examples/session_over_tunnel.py)
+for the exact wire path, and [`hostlib/README.md`](../hostlib/README.md) to get
+started.
+
+> **Reticulum / LXMF apps: do NOT use this.** Reticulum already provides
+> session-oriented end-to-end crypto, and an LXMF app's value is wire
+> compatibility with the wider Reticulum network — a parallel crypto stack would
+> break that. `aln_session` is for **non-Reticulum custom apps** only. If you're
+> on Path A, you already have Reticulum's crypto and need nothing here.
+
+The clear-text `web/chat-demo.html` is a bring-up tool and stays unencrypted by
+design.
+
 ---
 
 ## 4.5 Path C — KISS TNC mode (fw ≥ 0.7.1)

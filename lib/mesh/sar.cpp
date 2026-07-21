@@ -59,8 +59,20 @@ bool SarReassembler::add(const uint8_t* payload, uint16_t len) {
 
     if (count == 0 || count > SAR_MAX_FRAGS || tlen > SAR_MAX_FILE || idx >= count) return false;
 
-    // New transfer? (different id, or first fragment seen) — reset.
+    // Header self-consistency (untrusted radio input): the fragment count must
+    // be exactly what the declared blob length implies, and the chunk must be
+    // exactly the size that (idx, tlen) implies — full SAR_CHUNK for all but
+    // the last fragment, the remainder for the last. Anything else is a
+    // malformed or forged fragment; accepting it lets got_count_ drift out of
+    // sync with the got_[] bitmap (found by fuzz_sar: "complete" with holes).
+    if (count != sar_frag_count(tlen)) return false;
+    uint32_t off    = (uint32_t)idx * SAR_CHUNK;
+    uint16_t expect = (uint16_t)((idx == count - 1) ? (tlen - off) : SAR_CHUNK);
+    uint16_t chunk  = (uint16_t)(len - SAR_HDR_BYTES);
+    if (chunk != expect) return false;
+
     if (!active_ || xfer != xfer_id_) {
+        // New transfer (different id, or first fragment seen) — reset.
         active_     = true;
         xfer_id_    = xfer;
         frag_count_ = count;
@@ -68,11 +80,13 @@ bool SarReassembler::add(const uint8_t* payload, uint16_t len) {
         total_crc_  = tcrc;
         got_count_  = 0;
         for (uint16_t i = 0; i < SAR_MAX_FRAGS; i++) got_[i] = false;
+    } else if (count != frag_count_ || tlen != total_len_ || tcrc != total_crc_) {
+        // Same xfer_id but a contradicting header: drop it rather than let an
+        // injected fragment corrupt an in-flight transfer's state.
+        return false;
     }
 
-    uint32_t off   = (uint32_t)idx * SAR_CHUNK;
-    uint16_t chunk = (uint16_t)(len - SAR_HDR_BYTES);
-    if (off + chunk > SAR_MAX_FILE) return false;
+    if (off + chunk > SAR_MAX_FILE) return false;   // defense in depth
 
     memcpy(buf_ + off, payload + SAR_HDR_BYTES, chunk);
     if (!got_[idx]) { got_[idx] = true; got_count_++; }
