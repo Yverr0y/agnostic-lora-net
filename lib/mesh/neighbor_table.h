@@ -38,6 +38,7 @@ struct Neighbor {
     link_addr_t my_alias    = ALIAS_NONE;
     link_addr_t their_alias = ALIAS_NONE;
     uint32_t  last_heard_ms = 0;
+    uint16_t  caps      = 0;      // capability bits from this neighbour's last announce (Task 2)
     bool      used      = false;
 
     bool asymmetric() const {
@@ -61,6 +62,14 @@ public:
     // Record the alias this neighbour assigned to us (their_alias), learned when
     // their announce reports us. No-op if we don't know the neighbour yet.
     void set_their_alias(node_id_t id, link_addr_t alias);
+
+    // Record the capability bits from a neighbour's announce. No-op if unknown.
+    void set_caps(node_id_t id, uint16_t caps);
+
+    // Does neighbour `id` advertise capability `cap` (a mesh::Capability bit)?
+    // False for an unknown neighbour or one that advertised no such bit — so a
+    // feature that gates on this degrades safely on a mixed-version mesh.
+    bool supports(node_id_t id, uint16_t cap) const;
 
     // --- link addressing resolvers ---
     // Alias to stamp as next_hop to reach `id` (their_alias), 0 if not negotiated.

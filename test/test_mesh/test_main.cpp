@@ -11,6 +11,7 @@
 #include <functional>
 #include "router.h"
 #include "link_metric.h"
+#include "capabilities.h"
 
 using namespace mesh;
 
@@ -177,6 +178,45 @@ static void test_blocked_link_forces_relay() {
     TEST_ASSERT_TRUE(A.is_blocked(NC));
 }
 
+// --- capability negotiation end to end (Task 2) ---
+// Capabilities advertised in a node's announce must reach its neighbours'
+// tables so a feature can gate on neighbor_supports(). Simulate two peers whose
+// firmware advertises different capability sets and confirm each learns the
+// other's, while an unadvertised bit and an unknown neighbour both read false.
+static void test_capability_propagation() {
+    Router A(NA), B(NB);
+    Sim sim; sim.nodes = {&A, &B};
+    sim.q = [](node_id_t, node_id_t) { return 0.9f; };   // A<->B in range
+
+    // build_announce() stamps NODE_CAPS; to model heterogeneous peers we deliver
+    // announces with explicit cap sets (as if each ran different firmware).
+    Announce annA, annB;
+    A.build_announce(annA); annA.caps = CAP_SELECTIVE_ACK | CAP_SESSION_ADDR;
+    B.build_announce(annB); annB.caps = CAP_SELECTIVE_ACK;   // supports fewer
+
+    A.on_beacon(NB, 0.9f, annB, 1000);
+    B.on_beacon(NA, 0.9f, annA, 1000);
+
+    // A learned B's set; B learned A's set.
+    TEST_ASSERT_TRUE(A.neighbor_supports(NB, CAP_SELECTIVE_ACK));
+    TEST_ASSERT_FALSE(A.neighbor_supports(NB, CAP_SESSION_ADDR));   // B didn't advertise it
+    TEST_ASSERT_TRUE(B.neighbor_supports(NA, CAP_SELECTIVE_ACK));
+    TEST_ASSERT_TRUE(B.neighbor_supports(NA, CAP_SESSION_ADDR));
+
+    // An unknown neighbour supports nothing (safe default for a mixed mesh).
+    TEST_ASSERT_FALSE(A.neighbor_supports(NC, CAP_SELECTIVE_ACK));
+}
+
+// A legacy neighbour (announce with no caps -> caps == 0 after decode) is
+// learned as supporting nothing, so any capability-gated feature stays off.
+static void test_legacy_neighbor_supports_nothing() {
+    Router A(NA), B(NB);
+    Announce annB; B.build_announce(annB); annB.caps = 0;   // legacy: no capabilities
+    A.on_beacon(NB, 0.9f, annB, 1000);
+    TEST_ASSERT_FALSE(A.neighbor_supports(NB, CAP_SELECTIVE_ACK));
+    TEST_ASSERT_FALSE(A.neighbor_supports(NB, CAP_SESSION_ADDR));
+}
+
 void setUp() {}
 void tearDown() {}
 
@@ -188,5 +228,7 @@ int main(int, char**) {
     RUN_TEST(test_asymmetric_per_direction);
     RUN_TEST(test_reroute_on_relay_loss);
     RUN_TEST(test_blocked_link_forces_relay);
+    RUN_TEST(test_capability_propagation);
+    RUN_TEST(test_legacy_neighbor_supports_nothing);
     return UNITY_END();
 }

@@ -48,9 +48,10 @@ $(OBJDIR)/mono_%.o: $(REPO)/lib/monocypher/%.c | $(OBJDIR)
 $(OBJDIR)/fuzz_%: fuzz_%.cpp $(LIB_OBJ)
 	$(CXX) $(CXXFLAGS) -fsanitize=fuzzer $< $(LIB_OBJ) -o $@
 
-# Seed generator: plain host build, no sanitizers (it only runs trusted builders).
-$(OBJDIR)/gen_seeds: gen_seeds.cpp | $(OBJDIR)
-	$(CXX) -std=c++17 $(COMMON) $< $(LIB_CPP) $(LIB_C) -o $@
+# Seed generator: plain host build, no sanitizers (it only runs trusted
+# builders). Depends on the lib sources so an encoder change regenerates seeds.
+$(OBJDIR)/gen_seeds: gen_seeds.cpp $(LIB_CPP) $(LIB_C) | $(OBJDIR)
+	$(CXX) -std=c++17 $(COMMON) gen_seeds.cpp $(LIB_CPP) $(LIB_C) -o $@
 
 seeds: $(OBJDIR)/gen_seeds
 	mkdir -p $(TARGETS:%=corpus/%)

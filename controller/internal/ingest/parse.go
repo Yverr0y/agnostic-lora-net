@@ -34,6 +34,7 @@ var (
 	reStatus     = idre(`^\[status\] (§) fw=(\S+) up=(\d+)min sf=(\d+) pwr=(-?\d+) batt=(?:(\d+)mV/(\d+)%|\?)(?: mob=(\d))?(?: ble=(\d))?(?: name=(.*))?$`)
 	reAnnNbr     = idre(`^\[nbrs\] (§) age=(\d+)s rssi=(-?\d+) snr=(-?\d+)(?: batt=(\d+)%)?`)
 	reAnn        = idre(`^\[ann\] (§)(?: pub=([0-9A-Fa-f]{64}))? sig=(ok|bad|none)`)
+	reVerDrop    = regexp.MustCompile(`^\[ver\] drops=(\d+) last=(\d+) supported=(\d+)`)
 	reBeaconTX   = idre(`^\[TX\] beacon seq=(\d+) from (§)\s+\+announce (\d+)B`)
 	reBeaconRX   = idre(`^\[RX\] beacon\s+src=(§) seq=(\d+) up=(\d+)s`)
 	reFrameRX    = idre(`^\[RX\] type=(\d+)\s+src=(§) seq=(\d+) len=(\d+)`)
@@ -181,6 +182,11 @@ func ParseLine(line string) (Event, bool) {
 	if m := reBattMv.FindStringSubmatch(t); m != nil {
 		e := newEvent(KindBatt, t)
 		e.Num["mv"], e.Num["pct"] = atoi(m[1]), atoi(m[2])
+		return e, true
+	}
+	if m := reVerDrop.FindStringSubmatch(t); m != nil {
+		e := newEvent(KindVersionDrop, t)
+		e.Num["drops"], e.Num["last"], e.Num["supported"] = atoi(m[1]), atoi(m[2]), atoi(m[3])
 		return e, true
 	}
 	return Event{Kind: KindUnknown, Raw: t}, false

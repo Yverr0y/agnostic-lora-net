@@ -11,10 +11,19 @@
 // aliasing / alignment assumptions), so the format is identical on every target.
 //
 // On-wire layout (immediately follows BeaconPayload in the beacon):
-//   u8  n_reports
+//   u8  rep_byte    bit7 = HAS_CAPS, bits0..6 = n_reports (0..MAX_NEIGHBORS)
 //   u8  n_routes
+//   u16 caps        present IFF HAS_CAPS (little-endian, mesh::Capability bits)
 //   n_reports × { id[16], u8 q_q, u8 alias }
 //   n_routes  × { id[16] dst, id[16] next_hop, u16 cost_q, u8 hops }
+//
+// The HAS_CAPS bit makes the capability field self-describing rather than a
+// flag-day break (Task 2). A capability-aware node always sets it (advertising
+// its caps, even if 0). A legacy node never sets it and its announces still
+// decode here as caps=0 — graceful backward compatibility. Conversely a legacy
+// decoder reading a new announce sees rep_byte >= 0x80, i.e. n_reports far above
+// MAX_NEIGHBORS, and cleanly REJECTS it (announce_deserialize returns false)
+// rather than misparsing — so no version bump of the network header is needed.
 #pragma once
 
 #include <stdint.h>
@@ -24,7 +33,9 @@ namespace mesh {
 
 constexpr uint16_t ANNOUNCE_REPORT_BYTES = 18;  // id[16] + u8 + u8 (id, q, alias)
 constexpr uint16_t ANNOUNCE_ROUTE_BYTES  = 35;  // id[16] + id[16] + u16 + u8
-constexpr uint16_t ANNOUNCE_HDR_BYTES    = 2;   // n_reports + n_routes
+constexpr uint16_t ANNOUNCE_HDR_BYTES    = 2;   // rep_byte + n_routes (caps extra)
+constexpr uint16_t ANNOUNCE_CAPS_BYTES   = 2;   // the optional u16 caps field
+constexpr uint8_t  ANNOUNCE_HAS_CAPS     = 0x80;// bit7 of rep_byte: caps field present
 
 // Serialise `a` into `buf` (capacity `cap`). Reports are written first, then as
 // many routes as still fit — so a too-small buffer degrades gracefully rather than

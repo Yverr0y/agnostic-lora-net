@@ -13,6 +13,7 @@
 
 #include "packet.h"
 #include "announce_codec.h"
+#include "capabilities.h"
 #include "control.h"
 #include "locator_dir.h"
 #include "sar.h"
@@ -50,6 +51,7 @@ static Announce sample_announce() {
     a.routes[0] = {nid_from_u32(0xAAAAAAAAu), nid_from_u32(0xAAAAAAAAu), 1.5f, 1};
     a.routes[1] = {nid_from_u32(0xCCCCCCCCu), nid_from_u32(0xBBBBBBBBu), 3.25f, 2};
     a.n_routes = 2;
+    a.caps = CAP_SELECTIVE_ACK | CAP_SESSION_ADDR;
     return a;
 }
 

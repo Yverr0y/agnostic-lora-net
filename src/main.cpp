@@ -27,6 +27,7 @@
 #include "control.h"
 #include "sar.h"
 #include "locator_dir.h"
+#include "version_stats.h"
 #include "node_table.h"            // nid_from_pubkey for the self-certifying node id
 #include "monocypher.h"            // node keypair: keygen + (later) announce signing
 #include "monocypher-ed25519.h"
@@ -101,6 +102,7 @@ static node_id_t       my_id;
 static mesh::Router*   router    = nullptr;  // constructed in setup() once my_id is known
 static mesh::Forwarder* forwarder = nullptr;
 static mesh::LinkArq   arq;                  // hop-by-hop ACK + retry
+static mesh::VersionStats ver_stats;         // frames dropped for wrong proto major (Task 2)
 static uint32_t        next_arq_ms = 0;
 static const uint32_t  ARQ_TICK_MS = 250;    // how often to check for retransmits
 static uint16_t        beacon_seq     = 0;
@@ -1684,7 +1686,11 @@ static void on_rx(const uint8_t* buf, uint16_t len, float rssi, float snr) {
     NetHeader net;
     memcpy(&net, buf + sizeof(LinkHeader), sizeof(net));
 
-    if (net_ver_of(net.ver_type) != PROTO_VERSION) return;  // not ours
+    uint8_t rx_ver = net_ver_of(net.ver_type);
+    if (rx_ver != PROTO_VERSION) {              // wrong protocol major — drop, but count it
+        ver_stats.on_foreign(rx_ver);           // so a mixed-version mesh is visible (Task 2)
+        return;
+    }
     if (net.src == my_id) return;                            // ignore our own echo
 
     PacketType type = net_type_of(net.ver_type);
@@ -2199,6 +2205,16 @@ static void print_info() {
              (unsigned)router->routes().count(), (unsigned)router->blocked_count(),
              node_mobile ? "on" : "off", node_name);
     Serial.println(l);
+    // Protocol-version drops: only printed once a foreign-version frame has been
+    // heard, so a healthy same-version mesh keeps the line clean. The controller
+    // map ingests this to flag an incompatible neighbour (Task 2).
+    if (ver_stats.any()) {
+        char v[64];
+        snprintf(v, sizeof(v), "[ver] drops=%lu last=%u supported=%u",
+                 (unsigned long)ver_stats.drops(), (unsigned)ver_stats.last_ver(),
+                 (unsigned)PROTO_VERSION);
+        Serial.println(v);
+    }
     // Authoritative block list (always printed, even when empty) so the map can sync
     // exactly which links this node is blocking. MAX_BLOCKED (8) ids fit one line.
     {

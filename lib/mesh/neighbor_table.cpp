@@ -80,6 +80,16 @@ void NeighborTable::set_their_alias(node_id_t id, link_addr_t alias) {
     if (n) n->their_alias = alias;
 }
 
+void NeighborTable::set_caps(node_id_t id, uint16_t caps) {
+    Neighbor* n = find(id);
+    if (n) n->caps = caps;
+}
+
+bool NeighborTable::supports(node_id_t id, uint16_t cap) const {
+    const Neighbor* n = find(id);
+    return n && (n->caps & cap) != 0;
+}
+
 link_addr_t NeighborTable::their_alias_for(node_id_t id) const {
     const Neighbor* n = find(id);
     return n ? n->their_alias : ALIAS_NONE;

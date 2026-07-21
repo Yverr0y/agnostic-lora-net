@@ -44,10 +44,19 @@ static inline uint16_t cost_to_u16(float cost) {
 static inline float u16_to_cost(uint16_t v) { return (float)v / 16.0f; }
 
 // ---------------------------------------------------------------------------
+// A capability-aware node always emits the caps field (so peers learn it speaks
+// the negotiated format); the field is omitted only when reconstructing a legacy
+// announce that had none. `caps == 0` still emits the field when the flag is set
+// — advertising "capability-aware, nothing extra yet" is distinct from "legacy".
 uint16_t announce_serialize(const Announce& a, uint8_t* buf, uint16_t cap) {
-    if (cap < ANNOUNCE_HDR_BYTES) return 0;
+    // Built announces default has_caps = true (caps-aware); the flag is only
+    // false when re-serializing one decoded from a legacy frame, which keeps
+    // decode->encode a faithful round-trip.
+    const bool has_caps = a.has_caps;
+    const uint16_t hdr = ANNOUNCE_HDR_BYTES + (has_caps ? ANNOUNCE_CAPS_BYTES : 0);
+    if (cap < hdr) return 0;
 
-    uint16_t off = ANNOUNCE_HDR_BYTES;  // reserve the two count bytes
+    uint16_t off = hdr;                 // reserve header (counts [+ caps])
     uint8_t  n_reports = 0, n_routes = 0;
 
     for (uint8_t i = 0; i < a.n_reports; i++) {
@@ -66,8 +75,9 @@ uint16_t announce_serialize(const Announce& a, uint8_t* buf, uint16_t cap) {
         n_routes++;
     }
 
-    put_u8(buf + 0, n_reports);
+    put_u8(buf + 0, (uint8_t)(n_reports | (has_caps ? ANNOUNCE_HAS_CAPS : 0)));
     put_u8(buf + 1, n_routes);
+    if (has_caps) put_u16(buf + 2, a.caps);
     return off;
 }
 
@@ -75,19 +85,29 @@ bool announce_deserialize(const uint8_t* buf, uint16_t len, Announce& out) {
     out = Announce{};
     if (len < ANNOUNCE_HDR_BYTES) return false;
 
-    uint8_t n_reports = get_u8(buf + 0);
-    uint8_t n_routes  = get_u8(buf + 1);
+    uint8_t  rep_byte = get_u8(buf + 0);
+    bool     has_caps = (rep_byte & ANNOUNCE_HAS_CAPS) != 0;
+    uint8_t  n_reports = rep_byte & (uint8_t)~ANNOUNCE_HAS_CAPS;   // low 7 bits
+    uint8_t  n_routes  = get_u8(buf + 1);
 
     // Reject counts that can't fit our fixed arrays (untrusted radio input).
+    // Note: a LEGACY decoder (no HAS_CAPS support) would see rep_byte >= 0x80 as
+    // n_reports > MAX_NEIGHBORS here and reject — that's the intended clean
+    // rejection of a caps announce by an old node.
     if (n_reports > MAX_NEIGHBORS || n_routes > MAX_ROUTES) return false;
 
+    uint16_t hdr = ANNOUNCE_HDR_BYTES + (has_caps ? ANNOUNCE_CAPS_BYTES : 0);
+
     // Reject buffers too short for the declared payload.
-    uint32_t need = (uint32_t)ANNOUNCE_HDR_BYTES
+    uint32_t need = (uint32_t)hdr
                   + (uint32_t)n_reports * ANNOUNCE_REPORT_BYTES
                   + (uint32_t)n_routes  * ANNOUNCE_ROUTE_BYTES;
     if (len < need) return false;
 
-    uint16_t off = ANNOUNCE_HDR_BYTES;
+    out.has_caps = has_caps;
+    out.caps = has_caps ? get_u16(buf + 2) : 0;   // unknown bits kept verbatim, ignored by callers
+
+    uint16_t off = hdr;
     for (uint8_t i = 0; i < n_reports; i++) {
         out.reports[i].id    = nid_read(buf + off); off += 16;
         out.reports[i].q     = byte_to_q(get_u8(buf + off)); off += 1;
@@ -106,7 +126,10 @@ bool announce_deserialize(const uint8_t* buf, uint16_t len, Announce& out) {
 }
 
 uint16_t announce_body_len(const Announce& a) {
-    return (uint16_t)(ANNOUNCE_HDR_BYTES
+    // Mirrors the on-wire body: the caps field is present unless this announce
+    // was decoded from a legacy (no-caps) frame. Built announces default
+    // has_caps = true, so their serialized length matches.
+    return (uint16_t)(ANNOUNCE_HDR_BYTES + (a.has_caps ? ANNOUNCE_CAPS_BYTES : 0)
                     + (uint16_t)a.n_reports * ANNOUNCE_REPORT_BYTES
                     + (uint16_t)a.n_routes  * ANNOUNCE_ROUTE_BYTES);
 }

@@ -48,6 +48,8 @@ func TestParseLine(t *testing.T) {
 			id: "8EA09546", checkN: map[string]int{"type": 4, "seq": 2, "len": 37}},
 		{line: "fw 0.8.2  built Jun 12 2026", wantOK: true, want: KindFW, checkS: map[string]string{"fw": "0.8.2"}},
 		{line: "batt mv=3850 pct=60", wantOK: true, want: KindBatt, checkN: map[string]int{"mv": 3850, "pct": 60}},
+		{line: "[ver] drops=3 last=1 supported=2", wantOK: true, want: KindVersionDrop,
+			checkN: map[string]int{"drops": 3, "last": 1, "supported": 2}},
 		{line: "some unmodelled debug line", wantOK: false, want: KindUnknown},
 		{line: "   ", wantOK: false, want: KindUnknown},
 	}
