@@ -390,6 +390,11 @@ static void rf_print(const RadioCfg& c, const char* tag) {
 #ifdef AGN_BLE
 static volatile bool ble_connected = false;
 static uint32_t  ble_rxb = 0, ble_txb = 0;
+// Notify back-pressure diagnostics (BR-11, the 183-of-231B truncated announce):
+// qfull = times a notify found the HVN queue full and had to wait/retry (back-pressure
+// WORKING); drops = whole frames abandoned after the retry budget (client missed one
+// frame — recoverable upstream, unlike a truncation, which poisons the retry layers).
+static uint32_t  ble_tx_qfull = 0, ble_tx_drops = 0;
 // NUS-frame diagnostics (catches the classic "phone sends a frame too big for the ATT
 // MTU and doesn't chunk it" bug): completed HDLC tunnel frames seen on BLE, and the
 // largest in-progress accumulator. If a phone announce fires and `frames` does NOT
@@ -475,6 +480,46 @@ static void ble_evt_drain() {
         snprintf(m, sizeof(m), "[ble] disconnect reason=0x%02X", ble_evt_disc_reason);
         Serial.println(m);
     }
+}
+
+// --- connection-interval management (BR-11) ---------------------------------
+// Web Bluetooth has no connection-priority API, so a browser central drifts to a
+// power-save interval (or gets starved when one adapter time-slices two GATT links)
+// and the notify hop backs up — writes still trickle through, notifications don't.
+// The peripheral CAN ask for speed: request a fast interval as soon as the link is
+// up, and re-request every 30 s while the granted interval stays slow. This is the
+// firmware-side mirror of the mobile app's BR-10 CONNECTION_PRIORITY_HIGH refresh.
+// Runs from loop context only (SD calls are task-safe; console I/O is not SD-safe).
+static const uint16_t BLE_CI_MIN_U    = 12;      // 15 ms in 1.25 ms units
+static const uint16_t BLE_CI_MAX_U    = 24;      // 30 ms
+static const uint32_t BLE_CI_RETRY_MS = 30000;
+static uint32_t ble_ci_next_ms = 0;              // 0 => request immediately after connect
+static uint16_t ble_ci_logged  = 0;              // last interval printed (0 = none yet)
+
+static void ble_conn_param_tick() {
+    if (!ble_connected) { ble_ci_next_ms = 0; ble_ci_logged = 0; return; }
+    BLEConnection* conn = Bluefruit.Connection(Bluefruit.connHandle());
+    if (!conn) return;
+    uint16_t ci = conn->getConnectionInterval();          // 1.25 ms units
+    if (ci && ci != ble_ci_logged) {                      // log every negotiated change
+        ble_ci_logged = ci;
+        char m[40];
+        snprintf(m, sizeof(m), "[ble] conn interval=%u.%02ums",
+                 (unsigned)(ci * 125 / 100), (unsigned)(ci * 125 % 100));
+        Serial.println(m);
+    }
+    if ((int32_t)(millis() - ble_ci_next_ms) < 0) return;
+    ble_ci_next_ms = millis() + BLE_CI_RETRY_MS;
+    if (ci && ci <= BLE_CI_MAX_U) return;                 // already fast — nothing to fix
+    // Direct SD call rather than BLEConnection::requestConnectionParameter(): that
+    // API pins min==max, and a central offered no range rejects more often.
+    ble_gap_conn_params_t want = {
+        .min_conn_interval = BLE_CI_MIN_U,
+        .max_conn_interval = BLE_CI_MAX_U,
+        .slave_latency     = 0,
+        .conn_sup_timeout  = 400,                         // 4 s (10 ms units)
+    };
+    sd_ble_gap_conn_param_update(conn->handle(), &want);  // outcome shows up as a ci-change log
 }
 
 // Generate a fresh 6-digit pairing PIN.
@@ -574,6 +619,9 @@ static void ble_setup() {
     Bluefruit.begin();                              // start the SoftDevice (before radio.begin)
     Bluefruit.autoConnLed(false);                   // no blinking conn LED — solar power budget
     Bluefruit.setTxPower(4);
+    // Advertise a fast preferred interval (PPCP) so a well-behaved central starts
+    // fast; enforcement against drift/starvation is ble_conn_param_tick() (BR-11).
+    Bluefruit.Periph.setConnIntervalMS(15, 30);
     // The BLE name must fit the 31-byte legacy advertising / scan-response payload (a Complete
     // Local Name adds 2 AD bytes). The full 32-hex id would overflow ("ALN-"+32 = 36), so the
     // default uses a short id slice ("ALN-<8hex>"); a friendly name is capped at 20 chars
@@ -606,6 +654,7 @@ static void ble_setup() {
 static void ble_poll() {
     if (!ble_inited) return;   // stack not up (BLE never enabled) — nothing to service
     ble_evt_drain();           // print latched BLE events from loop context (never in callbacks)
+    ble_conn_param_tick();     // keep the notify hop's connection interval fast (BR-11)
     static uint8_t  bf[2 + sizeof(node_id_t) + TUN_HOST_MAX];   // HDLC tunnel frame (envelope+payload)
     static uint16_t bl = 0;
     static bool     inf = false, esc = false;
@@ -1951,20 +2000,63 @@ static void on_rx(const uint8_t* buf, uint16_t len, float rssi, float snr) {
 // (HDLC constants declared earlier so BLE input decoding can share them.)
 
 // Route raw bytes to the attached host transport: BLE if a client is connected,
-// else USB serial. BLEUart.write chunks across notifications internally.
+// else USB serial. Called with whole HDLC frames only (hdlc_write) — the abort
+// semantics below depend on that.
 static void host_write(const uint8_t* d, uint16_t n) {
 #ifdef AGN_BLE
     if (ble_connected) {
-        // BLEUart::write -> notify() silently CLAMPS each call to the TXD characteristic
-        // max_len (~247): the tail of any larger single write is dropped, the closing
-        // HDLC FLAG never reaches the client, and the whole frame dies invisibly at the
-        // last hop (BR-4: every >=3-fragment SAR delivery, e.g. 323B LXMF reactions,
-        // while <=247B frames sailed through). Chunk well under the clamp; notify()
-        // handles per-MTU splitting and HVN flow control within each chunk itself.
-        const uint16_t CH = 128;
-        for (uint16_t off = 0; off < n; off += CH) {
-            uint16_t k = (uint16_t)((n - off) < CH ? (n - off) : CH);
-            bleuart.write(d + off, k);
+        // Frames emitted between connect and the client's CCCD write vanish inside
+        // BLEUart::write (notifyEnabled false -> 0 with no trace). Drop the whole
+        // frame loudly instead — upper retry layers recover a missing frame.
+        if (!bleuart.notifyEnabled()) {
+            ble_tx_drops++;
+            static uint32_t warn_ms = 0;
+            if ((int32_t)(millis() - warn_ms) >= 0) {
+                warn_ms = millis() + 5000;
+                char m[56];
+                snprintf(m, sizeof(m), "[ble] tx-drop no-subscriber frame=%uB", (unsigned)n);
+                Serial.println(m);
+            }
+            return;
+        }
+        // Chunk at ONE ATT payload (MTU-3) so each BLEUart::write is a single
+        // notification packet, i.e. all-or-nothing. A multi-packet write that hits a
+        // full HVN queue mid-chunk sends a prefix then reports plain failure —
+        // retrying it would duplicate bytes and pressing on truncates the frame
+        // (BR-11: the 183-of-231B announce, head intact / tail gone, at the browser).
+        // Floor 20 covers a pre-MTU-exchange central; cap 244 is the TXD max_len.
+        // (The old fixed 128B chunking replaced here also fixed BR-4's >max_len clamp.)
+        BLEConnection* conn = Bluefruit.Connection(Bluefruit.connHandle());
+        uint16_t ch = conn ? (uint16_t)(conn->getMtu() - 3) : 20;
+        if (ch < 20)  ch = 20;
+        if (ch > 244) ch = 244;
+        // Retry budget per frame: worst legit frame (~1.5KB escaped) at the 20B MTU
+        // floor is ~80 packets ≈ 500ms on a healthy 30ms interval — 1200ms means only
+        // a pathological link gives up. Each failed write already blocked ~100ms for
+        // an HVN slot (BLE_GENERIC_TIMEOUT), so this loop can stall the main task at
+        // most ~budget ms — comparable to the old code's worst case, but it now either
+        // DELIVERS the frame or drops it whole with a console line, never truncates.
+        const uint32_t BLE_FRAME_BUDGET_MS = 1200;
+        uint32_t t0 = millis();
+        for (uint16_t off = 0; off < n; ) {
+            uint16_t k = (uint16_t)((n - off) < ch ? (n - off) : ch);
+            if (bleuart.write(d + off, k) == k) { off += k; continue; }
+            // HVN queue full (slow/starved connection interval): back-pressure, then
+            // retry the SAME offset — the failed single-packet write sent nothing.
+            ble_tx_qfull++;
+            if (!ble_connected) return;             // link died mid-frame
+            if ((int32_t)(millis() - t0) > (int32_t)BLE_FRAME_BUDGET_MS) {
+                // Abandon the WHOLE frame, loudly. The partial head already out is
+                // closed by the next frame's opening FLAG and discarded client-side
+                // as a short frame; subsequent frames stay in sync.
+                ble_tx_drops++;
+                char m[56];
+                snprintf(m, sizeof(m), "[ble] notify-drop qfull frame=%uB off=%u",
+                         (unsigned)n, (unsigned)off);
+                Serial.println(m);
+                return;
+            }
+            delay(2);   // immediate-error paths (no semaphore wait) must not spin hot
         }
         ble_txb += n;
         return;
@@ -2388,6 +2480,36 @@ static void handle_command(char* line) {
         if (ble_advertising) ble_start_adv();   // re-apply for the next pairing
         cfg_save();                             // persist the new PIN across reboots
         char m[40]; snprintf(m, sizeof(m), "BLE PIN=%s (saved)", ble_pin); Serial.println(m);
+    } else if (!strcmp(cmd, "bletest")) {    // bletest <size> [count] — notify-hop soak, zero RF
+        // Emits seq-numbered tunnel frames straight down the node->client notify path
+        // (BR-11 test hook): a laptop harness or the webclient measures loss/truncation
+        // /latency of the BLE hop in isolation. Payload: 'B','T',seq_hi,seq_lo, then
+        // (seq+i)&0xFF filler — any truncation point is byte-identifiable.
+        char* szS  = strtok(nullptr, " ");
+        char* cntS = strtok(nullptr, " ");
+        if (!szS) { Serial.println("usage: bletest <payload-bytes> [count]"); return; }
+        if (!ble_connected || !bleuart.notifyEnabled()) {
+            Serial.println("bletest: no subscribed BLE client"); return;
+        }
+        uint16_t sz = (uint16_t)atoi(szS);
+        if (sz < 4) sz = 4;
+        if (sz > TUN_HOST_MAX) sz = TUN_HOST_MAX;
+        uint16_t cnt = cntS ? (uint16_t)atoi(cntS) : 10;
+        if (cnt < 1) cnt = 1;
+        if (cnt > 100) cnt = 100;
+        static uint8_t pat[TUN_HOST_MAX];      // static: too big for the loop-task stack
+        uint32_t q0 = ble_tx_qfull, d0 = ble_tx_drops, t0 = millis();
+        for (uint16_t seq = 0; seq < cnt; seq++) {
+            pat[0] = 'B'; pat[1] = 'T';
+            pat[2] = (uint8_t)(seq >> 8); pat[3] = (uint8_t)seq;
+            for (uint16_t i = 4; i < sz; i++) pat[i] = (uint8_t)(seq + i);
+            tunnel_emit(my_id, pat, sz);
+        }
+        char r[88];
+        snprintf(r, sizeof(r), "bletest done: %u x %uB in %lums (qfull=%lu drops=%lu)",
+                 (unsigned)cnt, (unsigned)sz, (unsigned long)(millis() - t0),
+                 (unsigned long)(ble_tx_qfull - q0), (unsigned long)(ble_tx_drops - d0));
+        Serial.println(r);
 #endif
     } else if (!strcmp(cmd, "trace")) {        // trace [on|off] — beacon RX/TX console lines
         char* a = strtok(nullptr, " ");
@@ -2673,7 +2795,7 @@ static void handle_command(char* line) {
         Serial.println("cad [on|off]   (CSMA listen-before-talk; counters in `info`)");
         Serial.println("register <idhex> | resolve <idhex> | dirdump | nbrdump | batt [cal <mV>] | net [beacon <s>|auto] | trace [on|off] | mobile [on|off] | status <id> | battdump | kiss [<id>|off] | pub | anndump | ctrlkey [<64hex>|clear] | ctrlsend <hex>");
 #ifdef AGN_BLE
-        Serial.println("ble [on|off|unbond] | blepin [random|<6 digits>]");
+        Serial.println("ble [on|off|unbond] | blepin [random|<6 digits>] | bletest <size> [count]");
 #endif
     } else {
         Serial.print("unknown cmd: "); Serial.println(cmd);
@@ -2904,13 +3026,17 @@ static void agn_loop_once() {
                      (unsigned)batt_last_mv, (unsigned)batt_pct(batt_last_mv));
         Serial.println(hb);
 #ifdef AGN_BLE
-        static char bl[104];  // static: this +32B over the old [72] was THE stack tipper
+        static char bl[136];  // static: growing this on-stack was THE stack tipper
         // No PIN here: the pairing PIN appears ON DEMAND only (`ble`, `blepin`) —
         // a secret has no business in 3-second telemetry that lands in every log.
-        snprintf(bl, sizeof(bl), "[ble] adv=%d connected=%d rx=%lu tx=%lu frames=%lu fmax=%u",
+        // ci = granted connection interval in 1.25ms units (24 = 30ms); qfull/drop
+        // are the notify back-pressure counters (BR-11) — drop should stay 0.
+        snprintf(bl, sizeof(bl), "[ble] adv=%d connected=%d rx=%lu tx=%lu frames=%lu fmax=%u ci=%u qfull=%lu drop=%lu",
                  (int)ble_advertising, (int)ble_connected,
                  (unsigned long)ble_rxb, (unsigned long)ble_txb,
-                 (unsigned long)ble_frames, (unsigned)ble_open_max);
+                 (unsigned long)ble_frames, (unsigned)ble_open_max,
+                 (unsigned)ble_ci_logged,
+                 (unsigned long)ble_tx_qfull, (unsigned long)ble_tx_drops);
         Serial.println(bl);   // watch this stay connected=1 through the LoRa beacons above
 #endif
 #ifdef LED_BUILTIN
