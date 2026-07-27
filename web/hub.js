@@ -67,7 +67,8 @@ async function doFlash() {
   // nRF52 boards: in-browser serial DFU.
   $('espFlash').classList.add('hide');
   $('nrfFlash').classList.remove('hide');
-  setStep(2); $('uf2Fallback').classList.add('hide'); $('prog').style.width='0';
+  setStep(2); $('uf2Fallback').classList.add('hide'); $('bootPick').classList.add('hide');
+  $('prog').style.width='0';
   $('dlUf2').onclick = () => window.open(fwBaseUrl()+BOARD_FILE[board]+'.uf2', '_blank');
 
   if (!('serial' in navigator)) { flashFail('Web Serial not supported — use Chrome/Edge, or the UF2 fallback.'); return; }
@@ -86,7 +87,30 @@ async function doFlash() {
   } catch (e) { setStep(1); return; }   // user cancelled the picker
 
   try {
-    if (!$('isBoot').checked) { $('flashState').textContent='rebooting to bootloader…'; log('1200-baud touch'); await DFU.touch(port); }
+    if (!$('isBoot').checked) {
+      // The 1200-baud touch reboots the app into its UF2/serial bootloader, which
+      // re-enumerates as a DIFFERENT USB device — the SerialPort picked above goes
+      // stale and must NOT be reused (reusing it was the "flasher doesn't realize
+      // it's in bootloader mode" bug). Arm the 'connect' listener BEFORE touching:
+      // a bootloader port this browser has flashed before is still granted and pops
+      // in with zero extra clicks; a first-time board needs one more picker (a
+      // requestPort needs a fresh user gesture, hence the button).
+      $('flashState').textContent='rebooting to bootloader…'; log('1200-baud touch');
+      const armed = waitForBootPort(5000);
+      await DFU.touch(port);
+      $('flashState').textContent='waiting for bootloader port…';
+      let boot = await armed;
+      if (boot) {
+        log('bootloader port appeared — continuing');
+        await new Promise(r => setTimeout(r, 300));      // let the OS finish enumerating
+      } else {
+        $('flashState').textContent='in bootloader — select its port';
+        log('first flash of this board: grant its bootloader port in the picker');
+        boot = await askBootPort();
+        if (!boot) { setStep(1); return; }
+      }
+      port = boot;
+    }
     $('flashState').textContent='flashing…';
     await DFU.flash(port, dfu, { log, prog: p => { $('prog').style.width=p+'%'; $('flashState').textContent='flashing… '+p+'%'; } });
     $('flashState').textContent='flashed ✓'; $('flashState').className='pill ok';
@@ -96,6 +120,35 @@ async function doFlash() {
     log('DFU error: '+e);
     flashFail('Auto-flash failed — use the UF2 fallback below.');
   }
+}
+// Resolve with the bootloader's SerialPort when it re-enumerates, or null on timeout.
+// 'connect' only fires for ports this origin was already granted — i.e. boards flashed
+// from this browser before. First-time boards time out here and go through askBootPort.
+function waitForBootPort(timeoutMs) {
+  return new Promise(resolve => {
+    let done = false;
+    const finish = p => { if (!done) { done = true;
+      navigator.serial.removeEventListener('connect', onConn); resolve(p); } };
+    const onConn = e => finish(e.port || e.target);      // SerialConnectionEvent vs spec
+    navigator.serial.addEventListener('connect', onConn);
+    setTimeout(() => finish(null), timeoutMs);
+  });
+}
+// Second port picker for a first-time board. requestPort needs a user gesture, so it
+// runs from the button click; cancelling the picker leaves the button up for another
+// try. Resolves null on "start over".
+function askBootPort() {
+  return new Promise(resolve => {
+    $('bootPick').classList.remove('hide');
+    $('bootPickBtn').onclick = async () => {
+      try {
+        const p = await navigator.serial.requestPort();
+        $('bootPick').classList.add('hide');
+        resolve(p);
+      } catch (e) { /* picker cancelled — button stays for another go */ }
+    };
+    $('bootPickCancel').onclick = () => { $('bootPick').classList.add('hide'); resolve(null); };
+  });
 }
 function flashFail(msg) {
   $('flashState').textContent = msg; $('flashState').className='pill bad';

@@ -128,8 +128,11 @@
       </select>
       <label class="row" style="margin:0"><input type="checkbox" id="isBoot"> already in bootloader</label>
     </div>
-    <p class="hint">nRF52 boards flash via in-browser serial DFU; ESP32-S3 boards via ESP Web Tools
-      (the “already in bootloader” option is nRF52-only). The T1000-E (LR1110) isn’t on the web
+    <p class="hint">nRF52 boards flash via in-browser serial DFU: pick the node’s port, it reboots
+      into its bootloader, and the bootloader shows up as a <b>new</b> port — the first flash asks
+      you to pick that one too; later flashes reuse the grant and run through automatically. Tick
+      “already in bootloader” only for a board that’s in it now (fresh board / double-tapped reset).
+      ESP32-S3 boards flash via ESP Web Tools instead. The T1000-E (LR1110) isn’t on the web
       flasher yet — build &amp; flash it locally: <code>pio run -e tracker_t1000_e -t upload</code>.</p>
     <div class="row">
       <input type="text" id="fwBase" value="" placeholder="firmware source (blank = ./fw/)" style="flex:1">
@@ -151,6 +154,17 @@
       <div class="bar"><div id="prog"></div></div>
       <div id="flashState" class="pill">starting…</div>
       <div id="log"></div>
+      <div id="bootPick" class="hide" style="margin-top:14px">
+        <h3>Board is in bootloader mode</h3>
+        <p class="hint">It rebooted and came back as a <b>new</b> serial port (named after the
+          bootloader, e.g. “RAK4631”, “XIAO nRF52840”). Pick that port to finish flashing —
+          this is only needed the first time; afterwards the browser remembers it and the
+          flash runs through without this step.</p>
+        <div class="row">
+          <button class="act primary" id="bootPickBtn">Select bootloader port →</button>
+          <button class="act" id="bootPickCancel">← Start over</button>
+        </div>
+      </div>
       <div id="uf2Fallback" class="hide" style="margin-top:14px">
         <h3>Couldn’t auto-flash — UF2 fallback</h3>
         <p class="hint">Double-tap the board’s reset (or unplug/replug while pressing reset) to mount its
