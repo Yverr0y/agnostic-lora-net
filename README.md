@@ -24,6 +24,51 @@ itself is never programmed per-app.
 The novelty (vs. Meshtastic/MeshCore/Reticulum): **link-quality-aware routing with
 independent per-direction paths** — asymmetric/one-way links are *used*, not discarded.
 
+## Quick start
+
+No toolchain needed — flashing and configuration run in the browser (Chrome/Edge;
+Web Serial + Web Bluetooth need a Chromium browser).
+
+**1. Get boards.** Two or more of: RAK4631 · Seeed XIAO nRF52840 + Wio-SX1262 ·
+Pro Micro nRF52840 + SX1262 · SenseCAP T1000-E · XIAO ESP32-S3 + Wio-SX1262 ·
+Heltec V4. The RAK and XIAO nRF52 are the bench-proven reference pair; the
+T1000-E and Heltec V4 build clean but have had less hardware time.
+
+**2. Flash.** Open **<https://thatsfguy.github.io/agnostic-lora-net/>** → *Flash*.
+Pick your board and follow the two steps: ① connect the serial port (the page
+reboots the board into its bootloader), ② pick the re-enumerated bootloader port
+and flash. ESP32-S3 boards flash on the same page via ESP Web Tools. (UF2
+drag-and-drop is the fallback for nRF52.) Flash **every node with the same
+version** — the wire format is still alpha and changes between releases.
+
+**3. Provision (same page).** After flashing, *Provision & configure* connects to
+the node over Web Serial: set a node name, and if a phone/browser will attach to
+this node, enable BLE and set its pairing PIN. Node identity is automatic — each
+node generates its own keypair on first boot; there is nothing to pre-share.
+The radio defaults are baked in (**906.625 MHz / BW250 / SF9** — US 915 band), so
+freshly flashed boards land on the same channel; retune here if your region needs it.
+
+**4. Power up — that's the mesh.** Nodes discover each other by beacon, measure
+per-direction link quality, and route automatically. Verify from the provision
+page's console: `status` lists neighbours with live RSSI/SNR.
+
+**5. Use it.**
+- **Encrypted messaging** — open the companion
+  **[Reticulum web client](https://thatsfguy.github.io/reticulum-webclient/)**,
+  connect to a node over Web Bluetooth (pair with the PIN from step 3), and you
+  have end-to-end encrypted LXMF chat with cryptographic delivery proofs across
+  the mesh — including images/files. One browser tab per node.
+- **Quick sanity check** — [`web/chat-demo.html`](web/chat-demo.html) is a
+  clear-text BLE chat for confirming the path works (test tool, not a messenger).
+- **Live map & control plane (optional)** — run the [`agnctl`
+  dashboard](#control-plane--the-agnctl-tier-1-controller) for the live topology
+  map, telemetry, and the autonomous RF power optimiser.
+- **Your own app** — the node's tunnel/TCP/KISS bridges carry any payload; start
+  at [`docs/tcp-bridge.md`](docs/tcp-bridge.md).
+
+Deeper bring-up notes (per-board quirks, USB/WSL, troubleshooting):
+[`docs/hardware-bringup.md`](docs/hardware-bringup.md).
+
 ## Why not just Meshtastic / MeshCore?
 
 Same radios, same physics — different class of network. All numbers below are
@@ -69,9 +114,9 @@ Validated end-to-end on 2× RAK4631 + a Seeed XIAO nRF52840 (Wio-SX1262), all SX
 | **Consolidated web control plane** — live map · decision feed · node Configure · in-browser Flash | `controller/` (`agnctl`, served at `:8080`) |
 
 The routing/codec/relay/alias/ARQ/SAR logic is **portable C++ in `lib/mesh`**, host
-unit-tested (**77 cases, `pio test -e native`**) and cross-compiled unchanged onto the
+unit-tested (**93 cases, `pio test -e native`**) and cross-compiled unchanged onto the
 nRF52. The Tier-1 controller is **Go** (`controller/`, stdlib-only), with its own host
-tests (`go test ./...`). Current firmware: **v0.14.0**.
+tests (`go test ./...`). Current firmware: **v0.18.0**.
 
 > **BLE note:** the original plan assumed BLE+LoRa coexistence required forking
 > MeshCore (because every hand-rolled attempt had failed). On this firmware it **works
@@ -116,7 +161,7 @@ docs/identity-vs-locator.md  design boundary: mesh routes on node-id locators, a
 PlatformIO (`nordicnrf52` + Adafruit nRF52 core + RadioLib 7.x; host `g++` for tests):
 
 ```bash
-pio test -e native               # 77 host unit tests for lib/mesh (no hardware)
+pio test -e native               # 93 host unit tests for lib/mesh (no hardware)
 pio run  -e wiscore_rak4631      # RAK4631 mesh firmware (BLE compiled in, off by default)
 pio run  -e xiao_nrf52           # Seeed XIAO nRF52840 + Wio-SX1262 (SoftDevice s140 v7)
 pio run  -e promicro             # Pro Micro nRF52840 + SX1262
