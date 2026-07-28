@@ -63,9 +63,16 @@ page's console: `status` lists neighbours with live RSSI/SNR.
   the mesh — including images/files. One browser tab per node.
 - **Quick sanity check** — [`web/chat-demo.html`](web/chat-demo.html) is a
   clear-text BLE chat for confirming the path works (test tool, not a messenger).
-- **Live map & control plane (optional)** — run the [`agnctl`
-  dashboard](#control-plane--the-agnctl-tier-1-controller) for the live topology
-  map, telemetry, and the autonomous RF power optimiser.
+- **Live map & autonomous RF optimisation (optional)** — tether the [`agnctl`
+  controller](#control-plane--the-agnctl-tier-1-controller) to any node over USB
+  and it builds a live topology dashboard (map, per-direction link quality,
+  telemetry, decision feed) and **closed-loop tunes every node's TX power
+  mesh-wide** — each node held at the minimum power that keeps its weakest
+  needed link healthy, signed commands, on-device auto-revert if the controller
+  disappears:
+  ```bash
+  cd controller && go run ./cmd/agnctl -port /dev/ttyACM0 -optimize -apply -http :8080
+  ```
 - **Your own app** — the node's tunnel/TCP/KISS bridges carry any payload; start
   at [`docs/tcp-bridge.md`](docs/tcp-bridge.md).
 
