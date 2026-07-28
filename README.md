@@ -31,8 +31,9 @@ Web Serial + Web Bluetooth need a Chromium browser).
 
 **1. Get boards.** Two or more of: RAK4631 · Seeed XIAO nRF52840 + Wio-SX1262 ·
 Pro Micro nRF52840 + SX1262 · SenseCAP T1000-E · XIAO ESP32-S3 + Wio-SX1262 ·
-Heltec V4. The RAK and XIAO nRF52 are the bench-proven reference pair; the
-T1000-E and Heltec V4 build clean but have had less hardware time.
+Heltec V4. The RAK and XIAO nRF52 are the bench-proven reference pair, and a
+Pro Micro runs as a permanently-deployed mast-top repeater; the T1000-E and
+Heltec V4 build clean but have had less hardware time.
 
 **2. Flash.** Open **<https://thatsfguy.github.io/agnostic-lora-net/>** → *Flash*.
 Pick your board and follow the two steps: ① connect the serial port (the page
@@ -43,7 +44,9 @@ version** — the wire format is still alpha and changes between releases.
 
 **3. Provision (same page).** After flashing, *Provision & configure* connects to
 the node over Web Serial: set a node name, and if a phone/browser will attach to
-this node, enable BLE and set its pairing PIN. Node identity is automatic — each
+this node — e.g. to run the **[Reticulum web
+client](https://thatsfguy.github.io/reticulum-webclient/)** for messaging (step
+5) — enable BLE and set its pairing PIN. Node identity is automatic — each
 node generates its own keypair on first boot; there is nothing to pre-share.
 The radio defaults are baked in (**906.625 MHz / BW250 / SF9** — US 915 band), so
 freshly flashed boards land on the same channel; retune here if your region needs it.
@@ -95,7 +98,9 @@ the mesh. At equal SF, texts deliver in ~1 s and prove in ~2 s.
 
 ## Status — proven on real hardware
 
-Validated end-to-end on 2× RAK4631 + a Seeed XIAO nRF52840 (Wio-SX1262), all SX1262:
+Validated end-to-end on 2× RAK4631 + a Seeed XIAO nRF52840 (Wio-SX1262), all SX1262;
+a Pro Micro nRF52840 + SX1262 is field-deployed as an unattended mast-top repeater
+(fw v0.18.0, hardware-watchdog-supervised, no BLE client):
 
 | Capability | Where |
 |---|---|
