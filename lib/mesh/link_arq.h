@@ -22,7 +22,15 @@ constexpr uint8_t  ARQ_MAX_RETRIES = 5;     // retransmits before giving up
 // SF11/BW250 a max (~200 B) frame is ~2 s on air, so a sub-second timeout would
 // retransmit before the first TX even finished. 5 s leaves margin.
 constexpr uint32_t ARQ_TIMEOUT_MS  = 5000;
-constexpr uint16_t ARQ_FRAME_MAX   = 200;   // cover a full SAR fragment (~178 B)
+constexpr uint16_t ARQ_FRAME_MAX   = 255;   // the radio's hard frame cap — an ARQ slot must hold
+                                            // ANY unicast frame. 200 was sized for a v1 SAR
+                                            // fragment (~178B payload + ~17B header) and never
+                                            // widened for v2's 41B header: a v2 SAR fragment
+                                            // frame is 220B, so track() rejected it and every
+                                            // fragment flew UNTRACKED — with ACK_REQ still
+                                            // stamped (receivers ACKed frames the sender could
+                                            // not retransmit) and loss recovery degraded from a
+                                            // ~300ms ARQ retry to the 6s+ end-to-end NACK loop.
 
 // Called by tick() for each frame that needs (re)transmission now.
 typedef void (*ArqResendFn)(void* ctx, const uint8_t* frame, uint16_t len);

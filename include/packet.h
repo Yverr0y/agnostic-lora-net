@@ -81,11 +81,16 @@ struct AGN_PACKED NetHeader {
 };
 
 static const uint8_t  DEFAULT_TTL = 16;
-static const uint16_t MAX_PAYLOAD = 230;  // cap under the SX1262 255-byte frame limit. Raised
-                                          // 200->230 so a ~167B RNS announce + the v2 41B header
-                                          // (16-byte ids) still rides ONE frame; at 200 it spilled
-                                          // into SAR and announces stopped delivering (v1 fit one
-                                          // frame at the old ~17B header). Radio pend_buf_ is 255.
+static const uint16_t MAX_PAYLOAD = 255;  // the radio's hard single-frame limit (SX1262/SX1276/
+                                          // LR1110 all cap LoRa payloads at 255; RADIO_MAX_FRAME
+                                          // and every RX buffer already sit at 255). History: 200
+                                          // (v1) -> 230 (v2, refit announces under the 41B header)
+                                          // -> 255: the 230 cap left the single-frame cutoff at
+                                          // 189B app payload, 22B SHORT of a ~211B opportunistic
+                                          // LXMF text — so EVERY chat message paid the full SAR
+                                          // machinery (stop-and-wait fragments + DONE round trip +
+                                          // the queue drain grace): ~3-5s serialized vs ~0.9s for
+                                          // the single 252B frame this cap now permits.
 
 // --- Beacon payload (§4 Tier 0: neighbour discovery) -----------------------
 // Phase 0 carries only enough to prove the link and print RSSI/SNR. Phase 2 will

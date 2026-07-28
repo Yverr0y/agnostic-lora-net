@@ -3002,7 +3002,31 @@ void setup() {
     next_arq_ms    = millis() + ARQ_TICK_MS;
 }
 
+#if defined(NRF52_SERIES)
+// Hardware watchdog — the self-recovery rail for nodes deployed out of physical
+// reach (tower repeaters): any hang that stops the main loop (the v2 stack-overflow
+// class, a wedged SPI transaction, SoftDevice deadlock) becomes a reboot instead of
+// a truck roll. 60 s is ~15x the longest legitimate loop stall (the 1.2 s BLE
+// notify-frame budget); the nRF52 WDT cannot be stopped once started, but any reset
+// (including NVIC_SystemReset and the DFU/bootloader entry path) clears it, so
+// scheduled reboots and reflashing are unaffected. SLEEP_Run keeps it counting
+// through sd_app_evt_wait; PAUSE during debugger halt stays default (halted).
+static void wdt_arm() {
+    if (NRF_WDT->RUNSTATUS) return;                      // already running (warm start)
+    NRF_WDT->CONFIG = WDT_CONFIG_SLEEP_Run << WDT_CONFIG_SLEEP_Pos;
+    NRF_WDT->CRV    = 60ul * 32768ul;                    // 60 s @ 32.768 kHz
+    NRF_WDT->RREN   = WDT_RREN_RR0_Msk;
+    NRF_WDT->TASKS_START = 1;
+}
+static inline void wdt_feed() { NRF_WDT->RR[0] = WDT_RR_RR_Reload; }
+#endif
+
 static void agn_loop_once() {
+#if defined(NRF52_SERIES)
+    static bool wdt_armed = false;
+    if (!wdt_armed) { wdt_armed = true; wdt_arm(); Serial.println("[wdt] armed 60s"); }
+    wdt_feed();
+#endif
     // 0) Bring-up heartbeat: a line every ~3 s so a monitor opened at any moment
     //    sees the node is alive (and whether it has found neighbours), without
     //    waiting for the ~10 s beacon cadence.
